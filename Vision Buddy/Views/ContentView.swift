@@ -10,9 +10,17 @@ import AppKit
 import Vision
 
 struct ContentView: View {
-    @ObservedObject var imageLoader = ImageLoader()
-    @ObservedObject var rectangleDetector = RectangleDetector()
-    var inputImageURL: URL?
+  
+    @State var imageURL: URL?
+    @State var rectangles = [VNRectangleObservation]()
+    @State var maximumObservations: Int = 0
+    @State var minimumAspectRatio: Float = 0.5
+    @State var maximumAspectRatio: Float = 1.0
+    @State var minimumSize: Float = 0.2
+    @State var quadratureTolerance: Float = 45.0
+    @State var minimumConfidence: Float = 0.5
+    @State var usesCPUOnly: Bool = false
+    var revision: Int = VNDetectRectanglesRequestRevision1
   
     var body: some View {
  
@@ -24,14 +32,14 @@ struct ContentView: View {
                     Button(action: self.loadImage, label: {
                       Text("Load Image")
                     })
-                    Toggle("Use CPU Only", isOn: $rectangleDetector.usesCPUOnly)
-                    Stepper(value: $rectangleDetector.maximumObservations, in: 0...10, step: 1, onEditingChanged: { _ in self.handleValueChange() }, label: { Text("Maximum Obervations = \(rectangleDetector.maximumObservations)") })
-                    Slider(value: $rectangleDetector.quadratureTolerance, in: 0...90, step: 5.0, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("90"), label: { Text("Quadrature Tolerance = \(String(format:"%.0f", self.rectangleDetector.quadratureTolerance))") })
-                    Slider(value: $rectangleDetector.minimumSize, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Size = \(String(format:"%.1f", self.rectangleDetector.minimumSize))") })
-                    Slider(value: $rectangleDetector.minimumAspectRatio, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Aspect Ratio = \(String(format:"%.1f", self.rectangleDetector.minimumAspectRatio))") })
-                    Slider(value: $rectangleDetector.maximumAspectRatio, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Maximum Aspect Ratio = \(String(format:"%.1f", self.rectangleDetector.maximumAspectRatio))") })
-                    Slider(value: $rectangleDetector.minimumConfidence, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Confidence = \(String(format:"%.1f", self.rectangleDetector.minimumConfidence))") })
-                    Text("\(rectangleDetector.rectangles.count) Rectangles Detected")
+                    Toggle("Use CPU Only", isOn: $usesCPUOnly)
+                    Stepper(value: $maximumObservations, in: 0...10, step: 1, onEditingChanged: { _ in self.handleValueChange() }, label: { Text("Maximum Obervations = \(maximumObservations)") })
+                    Slider(value: $quadratureTolerance, in: 0...90, step: 5.0, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("90"), label: { Text("Quadrature Tolerance = \(String(format:"%.0f", quadratureTolerance))") })
+                    Slider(value: $minimumSize, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Size = \(String(format:"%.1f", minimumSize))") })
+                    Slider(value: $minimumAspectRatio, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Aspect Ratio = \(String(format:"%.1f", minimumAspectRatio))") })
+                    Slider(value: $maximumAspectRatio, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Maximum Aspect Ratio = \(String(format:"%.1f", maximumAspectRatio))") })
+                    Slider(value: $minimumConfidence, in: 0...1, step: 0.1, onEditingChanged: { _ in self.handleValueChange() }, minimumValueLabel: Text("0"), maximumValueLabel: Text("1"), label: { Text("Minimum Confidence = \(String(format:"%.1f", minimumConfidence))") })
+                    Text("\(rectangles.count) Rectangles Detected")
                   }
                   Spacer()
                 }
@@ -39,12 +47,13 @@ struct ContentView: View {
                   ZStack{
                     Rectangle()
                       .foregroundColor(.white)
-                    if self.imageLoader.image != nil {
+                    if self.imageURL != nil {
                     GeometryReader { geometry in
-                      Image(nsImage: self.imageLoader.image!)
+//                      Image(nsImage: self.imageLoader.image!)
+                      Image(nsImage: NSImage(byReferencing: imageURL!))
                         .resizable()
-                      ForEach(rectangleDetector.rectangles, id: \.self) { result in
-                        let resultCornerPoints = [result.bottomLeft, result.topLeft, result.topRight, result.bottomRight, result.bottomLeft].map { flipPoint($0) }
+                      ForEach(rectangles, id: \.self) { result in
+                        let resultCornerPoints = [result.bottomLeft, result.topLeft, result.topRight, result.bottomRight, result.bottomLeft].map { $0.yFlipped() }
                         let imageCornerPoints = resultCornerPoints.map { VNImagePointForNormalizedPoint($0, Int(geometry.size.width), Int(geometry.size.height)) }
 
                         Quadrilateral(cornerPoints: imageCornerPoints)
@@ -58,19 +67,47 @@ struct ContentView: View {
               }
 
               }
-          .onAppear {
-            if let inputImageURL = inputImageURL {
-              self.imageLoader.loadImage(with: inputImageURL)
-            }
-      }
     }
   
-  func handleValueChange() {
-    self.rectangleDetector.performVisionRequest()
+  func performVisionRequest() {
+    guard let imageURL = imageURL else { return }
+      rectangles = []
+    
+    let ciImage = CIImage(contentsOf: imageURL, options: [CIImageOption.applyOrientationProperty: true])!
+    let requestHandler = VNImageRequestHandler(ciImage: ciImage, orientation: .up)
+      let request = VNDetectRectanglesRequest { request, error in
+          self.completedVisionRequest(request, error: error)
+      }
+      
+      request.maximumObservations = maximumObservations
+      request.minimumAspectRatio = minimumAspectRatio
+      request.maximumAspectRatio = maximumAspectRatio
+      request.minimumSize = minimumSize
+      request.quadratureTolerance = quadratureTolerance
+      request.minimumConfidence = minimumConfidence
+      request.usesCPUOnly = usesCPUOnly
+      request.revision = revision
+      
+      DispatchQueue.global().async {
+          do {
+              try requestHandler.perform([request])
+          } catch {
+              print("Error: Vision request failed.")
+          }
+      }
   }
   
-  func flipPoint(_ point: CGPoint) -> CGPoint {
-    return CGPoint(x: point.x, y: 1 - point.y)
+  func completedVisionRequest(_ request: VNRequest?, error: Error?) {
+      guard let rectangles = request?.results as? [VNRectangleObservation] else {
+          guard let error = error else { return }
+          print("Error: Vision detection failed with error: \(error.localizedDescription)")
+          return
+      }
+        self.rectangles = rectangles
+  }
+  
+  func handleValueChange() {
+    self.performVisionRequest()
   }
   
   func loadImage() {
@@ -84,9 +121,8 @@ struct ContentView: View {
     panel.begin { modalResponse in
       if modalResponse == .OK {
         let selectedURL = panel.urls[0]
-        self.imageLoader.loadImage(with: selectedURL)
-        self.rectangleDetector.imageURL = selectedURL
-        self.rectangleDetector.performVisionRequest()
+        imageURL = selectedURL
+        self.performVisionRequest()
       }
     }
   }

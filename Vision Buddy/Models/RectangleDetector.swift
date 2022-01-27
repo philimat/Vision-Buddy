@@ -11,7 +11,6 @@ import SwiftUI
 
 class RectangleDetector: ObservableObject {
   
-  var imageURL: URL?
   @Published var rectangles = [VNRectangleObservation]()
   @Published var maximumObservations: Int = 0
   @Published var minimumAspectRatio: Float = 0.5
@@ -20,13 +19,11 @@ class RectangleDetector: ObservableObject {
   @Published var quadratureTolerance: Float = 45.0
   @Published var minimumConfidence: Float = 0.5
   @Published var usesCPUOnly: Bool = false
-  var revision: Int = VNDetectRectanglesRequestRevision1
+   var revision: Int = VNDetectRectanglesRequestRevision1
   
-  func performVisionRequest() {
-    guard let imageURL = imageURL else { return }
+  func performVisionRequestFor(ciImage: CIImage) {
       rectangles = []
     
-    let ciImage = CIImage(contentsOf: imageURL, options: [CIImageOption.applyOrientationProperty: true])!
     let requestHandler = VNImageRequestHandler(ciImage: ciImage, orientation: .up)
       let request = VNDetectRectanglesRequest { request, error in
           self.completedVisionRequest(request, error: error)
